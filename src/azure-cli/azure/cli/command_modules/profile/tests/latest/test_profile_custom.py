@@ -3,7 +3,9 @@
 # Licensed under the MIT License. See License.txt in the project root for license information.
 # --------------------------------------------------------------------------------------------
 import os
+import tempfile
 import unittest
+from io import StringIO
 from unittest import mock
 
 from azure.cli.command_modules.profile.custom import (
@@ -196,6 +198,48 @@ class ProfileCommandTest(unittest.TestCase):
         assert _remove_adal_token_cache()
         assert not os.path.exists(adal_token_cache)
 
+
+
+class TestAccountShowSubscriptionDefault(unittest.TestCase):
+    """The account show command should honor local configured subscription defaults."""
+
+    def test_account_show_uses_workspace_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            global_dir = os.path.join(temp_dir, 'global', '.azure')
+            project_dir = os.path.join(temp_dir, 'project')
+            nested_dir = os.path.join(project_dir, 'nested')
+            os.makedirs(global_dir)
+            os.makedirs(os.path.join(project_dir, '.azure'))
+            os.makedirs(nested_dir)
+
+            with open(os.path.join(global_dir, 'config'), 'w', encoding='utf-8') as f:
+                f.write('[defaults]\\nsubscription = global-sub\\n')
+            with open(os.path.join(project_dir, '.azure', 'config'), 'w', encoding='utf-8') as f:
+                f.write('[defaults]\\nsubscription = workspace-sub\\n')
+
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(nested_dir)
+                with mock.patch.dict(os.environ, {
+                    'AZURE_CONFIG_DIR': global_dir,
+                    'AZURE_CORE_COLLECT_TELEMETRY': 'no'
+                }), mock.patch(
+                    'azure.cli.command_modules.profile.custom.Profile', autospec=True
+                ) as profile_mock:
+                    profile_mock.return_value.get_subscription.return_value = {
+                        'id': 'workspace-sub', 'name': 'Workspace subscription'
+                    }
+                    cli = DummyCli()
+                    self.assertEqual(cli.invoke(['account', 'show', '--output', 'none'], out_file=StringIO()), 0)
+                    profile_mock.return_value.get_subscription.assert_called_once_with('workspace-sub')
+
+                    profile_mock.return_value.get_subscription.reset_mock()
+                    self.assertEqual(cli.invoke(
+                        ['account', 'show', '--subscription', 'explicit-sub', '--output', 'none'],
+                        out_file=StringIO()), 0)
+                    profile_mock.return_value.get_subscription.assert_called_once_with('explicit-sub')
+            finally:
+                os.chdir(previous_cwd)
 
 class TestLoginSubscriptionFilter(unittest.TestCase):
     """Tests for custom.login() with --skip-subscription-discovery and --subscription parameters."""
