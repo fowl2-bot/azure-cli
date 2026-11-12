@@ -199,7 +199,6 @@ class ProfileCommandTest(unittest.TestCase):
         assert not os.path.exists(adal_token_cache)
 
 
-
 class TestAccountShowSubscriptionDefault(unittest.TestCase):
     """The account show command should honor local configured subscription defaults."""
 
@@ -213,9 +212,9 @@ class TestAccountShowSubscriptionDefault(unittest.TestCase):
             os.makedirs(nested_dir)
 
             with open(os.path.join(global_dir, 'config'), 'w', encoding='utf-8') as f:
-                f.write('[defaults]\\nsubscription = global-sub\\n')
+                f.write('[defaults]\nsubscription = global-sub\n')
             with open(os.path.join(project_dir, '.azure', 'config'), 'w', encoding='utf-8') as f:
-                f.write('[defaults]\\nsubscription = workspace-sub\\n')
+                f.write('[defaults]\nsubscription = workspace-sub\n')
 
             previous_cwd = os.getcwd()
             try:
@@ -240,6 +239,7 @@ class TestAccountShowSubscriptionDefault(unittest.TestCase):
                     profile_mock.return_value.get_subscription.assert_called_once_with('explicit-sub')
             finally:
                 os.chdir(previous_cwd)
+
 
 class TestLoginSubscriptionFilter(unittest.TestCase):
     """Tests for custom.login() with --skip-subscription-discovery and --subscription parameters."""
