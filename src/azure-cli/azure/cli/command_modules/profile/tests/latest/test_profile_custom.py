@@ -5,6 +5,7 @@
 import os
 import tempfile
 import unittest
+from contextlib import ExitStack
 from io import StringIO
 from unittest import mock
 
@@ -219,12 +220,23 @@ class TestAccountShowSubscriptionDefault(unittest.TestCase):
             previous_cwd = os.getcwd()
             try:
                 os.chdir(nested_dir)
-                with mock.patch.dict(os.environ, {
-                    'AZURE_CONFIG_DIR': global_dir,
-                    'AZURE_CORE_COLLECT_TELEMETRY': 'no'
-                }), mock.patch(
-                    'azure.cli.command_modules.profile.custom.Profile', autospec=True
-                ) as profile_mock:
+                from azure.cli.core import _session
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.dict(os.environ, {
+                        'AZURE_CONFIG_DIR': global_dir,
+                        'AZURE_CORE_COLLECT_TELEMETRY': 'no'
+                    }))
+                    stack.enter_context(mock.patch('azure.cli.core.util.check_connectivity',
+                                                   return_value=False))
+                    profile_mock = stack.enter_context(mock.patch(
+                        'azure.cli.command_modules.profile.custom.Profile', autospec=True))
+
+                    # DummyCli loads process-wide sessions: restore them for other tests.
+                    for session in vars(_session).values():
+                        if isinstance(session, _session.Session):
+                            stack.enter_context(mock.patch.object(session, 'filename', None))
+                            stack.enter_context(mock.patch.object(session, 'data', {}))
+
                     profile_mock.return_value.get_subscription.return_value = {
                         'id': 'workspace-sub', 'name': 'Workspace subscription'
                     }
