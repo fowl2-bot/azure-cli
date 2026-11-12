@@ -245,7 +245,7 @@ class TestAccountShowSubscriptionDefault(unittest.TestCase):
                     profile_mock.return_value.get_subscription.assert_called_once_with('workspace-sub')
 
                     profile_mock.return_value.get_subscription.reset_mock()
-                    self.assertEqual(cli.invoke(
+                    self.assertEqual(DummyCli().invoke(
                         ['account', 'show', '--subscription', 'explicit-sub', '--output', 'none'],
                         out_file=StringIO()), 0)
                     profile_mock.return_value.get_subscription.assert_called_once_with('explicit-sub')
