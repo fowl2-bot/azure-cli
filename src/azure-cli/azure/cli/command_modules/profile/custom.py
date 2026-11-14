@@ -78,7 +78,7 @@ def show_subscription(cmd, subscription=None):
 
 def _warn_if_token_context_differs(cmd, profile):
     """Warn terminal users when configured defaults imply a different token identity."""
-    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+    if not (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()):
         return
 
     # Argument defaults use local config; token acquisition currently does not.
