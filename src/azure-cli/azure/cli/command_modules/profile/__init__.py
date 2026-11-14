@@ -106,6 +106,10 @@ class ProfileCommandsLoader(AzCommandsLoader):
                        completer=get_subscription_id_list, help='Name or ID of subscription.')
             c.ignore('_subscription')
 
+        with self.argument_context('account show') as c:
+            # Use the same workspace-scoped subscription default as other commands.
+            c.argument('subscription', configured_default='subscription')
+
         with self.argument_context('account list') as c:
             c.argument('all', action='store_true',
                        help="List all subscriptions from all clouds, including subscriptions that are not 'Enabled'.")

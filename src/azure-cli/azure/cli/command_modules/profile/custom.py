@@ -76,6 +76,39 @@ def show_subscription(cmd, subscription=None):
     return profile.get_subscription(subscription)
 
 
+def _warn_if_token_context_differs(cmd, profile):
+    """Warn terminal users when configured defaults imply a different token identity."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()):
+        return
+
+    # Argument defaults use local config; token acquisition currently does not.
+    from azure.cli.core.util import ScopedConfig
+    with ScopedConfig(cmd.cli_ctx.config, True):
+        configured_subscription = cmd.cli_ctx.config.get('defaults', 'subscription', None)
+    if not configured_subscription:
+        return
+
+    try:
+        configured_account = profile.get_subscription(configured_subscription)
+        active_account = profile.get_subscription()
+    except CLIError:
+        # Token acquisition itself already verifies the current account.
+        # An unresolved configured subscription need not affect a successful token request.
+        return
+
+    def token_context(account):
+        user = account['user']
+        return (account['environmentName'], account['tenantId'].lower(),
+                user['type'], user['name'].lower())
+
+    if token_context(configured_account) != token_context(active_account):
+        logger.warning(
+            "Configured default subscription '%s' selects a different account context than "
+            "the active account. 'az account get-access-token' ignores subscription defaults; "
+            "pass '--subscription' explicitly to select the configured account.",
+            configured_subscription)
+
+
 def get_access_token(cmd, subscription=None, resource=None, scopes=None, resource_type=None, tenant=None):
     """
     get AAD token to access to a specified resource.
@@ -86,8 +119,11 @@ def get_access_token(cmd, subscription=None, resource=None, scopes=None, resourc
         resource = getattr(cmd.cli_ctx.cloud.endpoints, endpoints_attr_name)
 
     profile = Profile(cli_ctx=cmd.cli_ctx)
+    has_explicit_target = subscription is not None or tenant is not None
     creds, subscription, tenant = profile.get_raw_token(subscription=subscription, resource=resource, scopes=scopes,
                                                         tenant=tenant)
+    if not has_explicit_target:
+        _warn_if_token_context_differs(cmd, profile)
 
     result = {
         'tokenType': creds[0],

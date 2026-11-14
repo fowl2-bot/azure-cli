@@ -3,11 +3,15 @@
 # Licensed under the MIT License. See License.txt in the project root for license information.
 # --------------------------------------------------------------------------------------------
 import os
+import tempfile
 import unittest
+from contextlib import ExitStack
+from io import StringIO
 from unittest import mock
 
 from azure.cli.command_modules.profile.custom import (
-    list_subscriptions, get_access_token, login, logout, account_clear, _remove_adal_token_cache)
+    list_subscriptions, get_access_token, login, logout, account_clear, _remove_adal_token_cache,
+    _warn_if_token_context_differs)
 
 from azure.cli.core._profile import _TENANT_LEVEL_ACCOUNT_NAME
 from azure.cli.core.mock import DummyCli
@@ -195,6 +199,148 @@ class ProfileCommandTest(unittest.TestCase):
             f.write("test_token_cache")
         assert _remove_adal_token_cache()
         assert not os.path.exists(adal_token_cache)
+
+
+class TestGetAccessTokenWorkspaceWarning(unittest.TestCase):
+    """Only warn when an interactive token request would use a different identity."""
+
+    def setUp(self):
+        self.cmd = mock.MagicMock()
+        self.cmd.cli_ctx.config.use_local_config = False
+        self.cmd.cli_ctx.config.get.return_value = 'workspace-sub'
+        self.active_account = {
+            'environmentName': 'AzureCloud',
+            'tenantId': 'tenant-one',
+            'user': {'type': 'user', 'name': 'one@example.com'}
+        }
+        self.workspace_account = {
+            'environmentName': 'AzureCloud',
+            'tenantId': 'tenant-two',
+            'user': {'type': 'user', 'name': 'two@example.com'}
+        }
+        self.profile = mock.MagicMock()
+        self.profile.get_subscription.side_effect = (
+            lambda subscription=None: self.workspace_account if subscription else self.active_account)
+
+    @mock.patch('azure.cli.command_modules.profile.custom.logger', autospec=True)
+    @mock.patch('azure.cli.command_modules.profile.custom.sys')
+    def test_get_access_token_warns_for_different_workspace_identity(self, sys_mock, logger_mock):
+        sys_mock.stdin.isatty.return_value = True
+        sys_mock.stdout.isatty.return_value = True
+        sys_mock.stderr.isatty.return_value = True
+
+        _warn_if_token_context_differs(self.cmd, self.profile)
+
+        self.profile.get_subscription.assert_any_call('workspace-sub')
+        self.profile.get_subscription.assert_any_call()
+        self.assertEqual(self.cmd.cli_ctx.config.use_local_config, False)
+        logger_mock.warning.assert_called_once()
+
+    @mock.patch('azure.cli.command_modules.profile.custom.logger', autospec=True)
+    @mock.patch('azure.cli.command_modules.profile.custom.sys')
+    def test_get_access_token_does_not_warn_for_same_identity(self, sys_mock, logger_mock):
+        sys_mock.stdin.isatty.return_value = True
+        sys_mock.stdout.isatty.return_value = True
+        sys_mock.stderr.isatty.return_value = True
+        # Selecting another subscription with the same account and tenant
+        # does not change the token's identity or authority.
+        self.workspace_account['tenantId'] = 'tenant-one'
+        self.workspace_account['user']['name'] = 'one@example.com'
+
+        _warn_if_token_context_differs(self.cmd, self.profile)
+
+        logger_mock.warning.assert_not_called()
+
+    @mock.patch('azure.cli.command_modules.profile.custom.logger', autospec=True)
+    @mock.patch('azure.cli.command_modules.profile.custom.sys')
+    def test_get_access_token_does_not_warn_without_terminal(self, sys_mock, logger_mock):
+        sys_mock.stdin.isatty.return_value = True
+        sys_mock.stdout.isatty.return_value = False
+        sys_mock.stderr.isatty.return_value = True
+
+        _warn_if_token_context_differs(self.cmd, self.profile)
+
+        self.profile.get_subscription.assert_not_called()
+        self.cmd.cli_ctx.config.get.assert_not_called()
+        logger_mock.warning.assert_not_called()
+
+    @mock.patch('azure.cli.command_modules.profile.custom.logger', autospec=True)
+    @mock.patch('azure.cli.command_modules.profile.custom.sys')
+    def test_get_access_token_does_not_warn_for_missing_default(self, sys_mock, logger_mock):
+        sys_mock.stdin.isatty.return_value = True
+        sys_mock.stdout.isatty.return_value = True
+        sys_mock.stderr.isatty.return_value = True
+        self.cmd.cli_ctx.config.get.return_value = None
+
+        _warn_if_token_context_differs(self.cmd, self.profile)
+
+        self.profile.get_subscription.assert_not_called()
+        logger_mock.warning.assert_not_called()
+
+    @mock.patch('azure.cli.command_modules.profile.custom._warn_if_token_context_differs', autospec=True)
+    @mock.patch('azure.cli.command_modules.profile.custom.Profile', autospec=True)
+    def test_get_access_token_explicit_target_skips_warning(self, profile_mock, warn_mock):
+        profile_mock.return_value.get_raw_token.return_value = (
+            ('Bearer', 'test-token', {'expires_on': 100, 'expiresOn': 'date'}),
+            'sub-id', 'tenant-id')
+
+        get_access_token(self.cmd, subscription='sub-id')
+        get_access_token(self.cmd, tenant='tenant-id')
+
+        warn_mock.assert_not_called()
+
+
+class TestAccountShowSubscriptionDefault(unittest.TestCase):
+    """The account show command should honor local configured subscription defaults."""
+
+    def test_account_show_uses_workspace_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            global_dir = os.path.join(temp_dir, 'global', '.azure')
+            project_dir = os.path.join(temp_dir, 'project')
+            nested_dir = os.path.join(project_dir, 'nested')
+            os.makedirs(global_dir)
+            os.makedirs(os.path.join(project_dir, '.azure'))
+            os.makedirs(nested_dir)
+
+            with open(os.path.join(global_dir, 'config'), 'w', encoding='utf-8') as f:
+                f.write('[defaults]\nsubscription = global-sub\n')
+            with open(os.path.join(project_dir, '.azure', 'config'), 'w', encoding='utf-8') as f:
+                f.write('[defaults]\nsubscription = workspace-sub\n')
+
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(nested_dir)
+                from azure.cli.core import _session
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.dict(os.environ, {
+                        'AZURE_CONFIG_DIR': global_dir,
+                        'AZURE_CORE_COLLECT_TELEMETRY': 'no'
+                    }))
+                    stack.enter_context(mock.patch('azure.cli.core.util.check_connectivity',
+                                                   return_value=False))
+                    profile_mock = stack.enter_context(mock.patch(
+                        'azure.cli.command_modules.profile.custom.Profile', autospec=True))
+
+                    # DummyCli loads process-wide sessions: restore them for other tests.
+                    for session in vars(_session).values():
+                        if isinstance(session, _session.Session):
+                            stack.enter_context(mock.patch.object(session, 'filename', None))
+                            stack.enter_context(mock.patch.object(session, 'data', {}))
+
+                    profile_mock.return_value.get_subscription.return_value = {
+                        'id': 'workspace-sub', 'name': 'Workspace subscription'
+                    }
+                    cli = DummyCli()
+                    self.assertEqual(cli.invoke(['account', 'show', '--output', 'none'], out_file=StringIO()), 0)
+                    profile_mock.return_value.get_subscription.assert_called_once_with('workspace-sub')
+
+                    profile_mock.return_value.get_subscription.reset_mock()
+                    self.assertEqual(DummyCli().invoke(
+                        ['account', 'show', '--subscription', 'explicit-sub', '--output', 'none'],
+                        out_file=StringIO()), 0)
+                    profile_mock.return_value.get_subscription.assert_called_once_with('explicit-sub')
+            finally:
+                os.chdir(previous_cwd)
 
 
 class TestLoginSubscriptionFilter(unittest.TestCase):
