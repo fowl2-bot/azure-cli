@@ -103,7 +103,7 @@ def _warn_if_token_context_differs(cmd, profile):
 
     if token_context(configured_account) != token_context(active_account):
         logger.warning(
-            "Configured default subscription '%s' selects a different identity or tenant than "
+            "Configured default subscription '%s' selects a different account context than "
             "the active account. 'az account get-access-token' ignores subscription defaults; "
             "pass '--subscription' explicitly to select the configured account.",
             configured_subscription)
